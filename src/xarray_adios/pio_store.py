@@ -12,6 +12,7 @@ Phase 2 will add decomposition map support for unstructured grids.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import warnings
 from typing import Any
@@ -139,7 +140,7 @@ class PioStore:
             # Read block info to determine shape
             block_info = self._engine.blocks_info(vname, 0)
             nblocks = len(block_info)
-            block_counts = [int(bi["Count"]) for bi in block_info]
+            block_counts = [_parse_block_count(bi["Count"]) for bi in block_info]
             total_elements = sum(block_counts)
 
             # Infer dimensions and shape
@@ -192,6 +193,9 @@ class PioStore:
 
     def _read_blocks(self, info: VariableInfo) -> np.ndarray:
         """Read all blocks for a variable and reconstruct the global array."""
+        if info.nblocks == 0:
+            return np.empty(info.shape, dtype=info.dtype)
+
         var = self._io.inquire_variable(info.pio_name)
         var.set_step_selection((0, 1))
 
@@ -424,14 +428,35 @@ def _parse_attr_value(attr_info: dict) -> Any:
         return value
 
 
+def _parse_block_count(count_value: str | int) -> int:
+    """Parse a block Count value which may be a scalar or comma-separated dimensions.
+
+    ADIOS2 ``blocks_info`` reports ``Count`` as a string that can be either
+    a single integer (``"100"``) or a comma-separated shape (``"10,20"``).
+    Returns the total element count (product of dimensions).
+    """
+    s = str(count_value).strip()
+    if "," in s:
+        parts = [int(p) for p in s.split(",") if p.strip()]
+        result = 1
+        for p in parts:
+            result *= p
+        return result
+    return int(s)
+
+
 def is_pio_file(filename: str) -> bool:
     """Check if a BP file was written by PIO (has __pio__ namespace)."""
+    engine = None
     try:
         adios_obj = adios2.Adios()
         io = adios_obj.declare_io("pio_check")
         engine = io.open(str(filename), adios2.Mode.ReadRandomAccess)
         all_vars = io.available_variables()
-        engine.close()
         return any(v.startswith("/__pio__/") for v in all_vars)
     except Exception:
         return False
+    finally:
+        if engine is not None:
+            with contextlib.suppress(Exception):
+                engine.close()

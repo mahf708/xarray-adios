@@ -136,7 +136,8 @@ class AdiosBackendEntrypoint(BackendEntrypoint):
 
         # Store a reference to the store for cleanup
         ds.encoding["source"] = filename
-        ds.encoding["_adios_store"] = store
+        if hasattr(ds, "set_close"):
+            ds.set_close(store.close)
 
         return ds
 
