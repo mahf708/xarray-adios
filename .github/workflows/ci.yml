@@ -48,4 +48,4 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Type check with mypy
-        run: uv run --python 3.12 --extra dev mypy src/xarray_adios/ --ignore-missing-imports
+        run: uv run --python 3.12 --extra dev -- mypy src/xarray_adios/

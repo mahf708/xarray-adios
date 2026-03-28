@@ -56,6 +56,9 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["xarray_adios"]
 
+[tool.mypy]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
