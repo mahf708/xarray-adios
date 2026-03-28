@@ -74,6 +74,7 @@ class AdiosBackendEntrypoint(BackendEntrypoint):
             drop_variables = set()
 
         # Detect file type and open the appropriate store
+        store: PioStore | AdiosStore
         if is_pio_file(filename):
             logger.info("Detected PIO format: %s", filename)
             store = PioStore(filename)
