@@ -49,12 +49,12 @@ class AdiosBackendEntrypoint(BackendEntrypoint):
     """
 
     description = "Open ADIOS BP files (.bp) in xarray"
-    open_dataset_parameters = [
+    open_dataset_parameters = (
         "filename_or_obj",
         "drop_variables",
         "mask_and_scale",
         "decode_times",
-    ]
+    )
 
     def open_dataset(
         self,
