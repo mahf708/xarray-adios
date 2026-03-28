@@ -134,9 +134,16 @@ class AdiosBackendEntrypoint(BackendEntrypoint):
         if mask_and_scale or decode_times:
             ds = _decode_cf(ds, mask_and_scale=mask_and_scale, decode_times=decode_times)
 
-        # Store a reference to the store for cleanup
+        # Store a reference to the store and register a close callback so that
+        # Dataset.close() (or using the Dataset as a context manager) will
+        # properly close the underlying ADIOS engine.
         ds.encoding["source"] = filename
         ds.encoding["_adios_store"] = store
+
+        if hasattr(ds, "set_close"):
+            ds.set_close(store.close)  # xarray >= 0.16
+        else:
+            ds._close = store.close  # type: ignore[attr-defined]
 
         return ds
 

@@ -408,8 +408,8 @@ class PioStore:
 
         1. **Attribute-based**: an attribute ``{pio_name}/_pio_decomp`` or
            ``{short_name}/_pio_decomp`` whose value is the ioid string.
-        2. **Track-based**: variables or attributes under ``__pio__/track/``
-           that record variable-to-decomposition associations.
+        2. **Track-attribute-based**: attributes under ``__pio__/track/``
+           of the form ``/__pio__/track/{varname} = ioid``.
         3. **Block-matching heuristic**: match each variable's per-rank block
            counts against the per-rank block counts of available decomposition
            maps.  A unique match is used.
@@ -441,14 +441,6 @@ class PioStore:
                 val = _parse_attr_value(ainfo)
                 if suffix not in mapping:
                     mapping[suffix] = str(val)
-
-        # Also check track variables (e.g. /__pio__/track/{frame_id})
-        for vname in self._all_vars:
-            if not vname.startswith(_PIO_TRACK_PREFIX):
-                continue
-            suffix = vname[len(_PIO_TRACK_PREFIX) :]
-            # Frame-based track: read and interpret if needed
-            logger.debug("Found track variable: %s", vname)
 
         if mapping:
             self._var_decomp_map = mapping
@@ -625,8 +617,12 @@ class PioStore:
             and total_elements % decomp_total == 0
         ):
             nframes = total_elements // decomp_total
-            # Try to match nframes to a known dimension (usually time)
-            time_dim = self._find_dim_by_size(nframes, dims)
+            # Prefer an explicit "time" dimension when it matches nframes,
+            # and only fall back to a generic size-based lookup otherwise.
+            if "time" in dims and dims["time"] == nframes:
+                time_dim: str | None = "time"
+            else:
+                time_dim = self._find_dim_by_size(nframes, dims)
             if time_dim:
                 return (time_dim, spatial_dim), (nframes, spatial_size)
             return (f"frame_{nframes}", spatial_dim), (nframes, spatial_size)
@@ -679,26 +675,52 @@ class PioStore:
     # Attributes
     # ------------------------------------------------------------------
 
+    def _ensure_attr_index(self) -> None:
+        """Build an index of attributes by variable name/prefix (lazy).
+
+        Avoids repeatedly scanning ``self._all_attrs`` in
+        :meth:`_read_var_attrs`, which can become expensive for large
+        files with many variables and attributes.
+        """
+        if getattr(self, "_attr_index_built", False):
+            return
+
+        self._attrs_by_pio: dict[str, dict[str, Any]] = {}
+        self._attrs_by_short: dict[str, dict[str, Any]] = {}
+
+        for aname, ainfo in self._all_attrs.items():
+            if aname.startswith(_PIO_VAR_PREFIX):
+                var_path, _, attr_name = aname.rpartition("/")
+                if not attr_name:
+                    continue
+                self._attrs_by_pio.setdefault(var_path, {})[attr_name] = _parse_attr_value(ainfo)
+            else:
+                if "/" not in aname:
+                    continue
+                short_name, _, attr_name = aname.partition("/")
+                if not attr_name:
+                    continue
+                self._attrs_by_short.setdefault(short_name, {})[attr_name] = _parse_attr_value(
+                    ainfo
+                )
+
+        self._attr_index_built = True
+
     def _read_var_attrs(self, pio_name: str, short_name: str) -> dict[str, Any]:
         """Read attributes for a variable.
 
         PIO stores variable attributes as ADIOS attributes, typically
         associated with the ``__pio__/var/{name}`` path.
         """
+        self._ensure_attr_index()
+
         attrs: dict[str, Any] = {}
-        # ADIOS attributes associated with the variable
-        for aname, ainfo in self._all_attrs.items():
-            # Attributes can be stored as:
-            #   /__pio__/var/{name}/{attr_name}
-            #   {name}/{attr_name}
-            var_prefix = f"{pio_name}/"
-            short_prefix = f"{short_name}/"
-            if aname.startswith(var_prefix):
-                attr_name = aname[len(var_prefix) :]
-                attrs[attr_name] = _parse_attr_value(ainfo)
-            elif aname.startswith(short_prefix):
-                attr_name = aname[len(short_prefix) :]
-                attrs[attr_name] = _parse_attr_value(ainfo)
+        pio_attrs = self._attrs_by_pio.get(pio_name)
+        if pio_attrs:
+            attrs.update(pio_attrs)
+        short_attrs = self._attrs_by_short.get(short_name)
+        if short_attrs:
+            attrs.update(short_attrs)
 
         return attrs
 
@@ -706,14 +728,19 @@ class PioStore:
         """Read global (file-level) attributes."""
         attrs: dict[str, Any] = {}
         var_names = set(self._all_vars.keys())
+        # Also collect short variable names so that attributes stored as
+        # "{short_name}/{attr_name}" are correctly recognised as variable-scoped.
+        short_var_names = {
+            v[len(_PIO_VAR_PREFIX) :] for v in self._all_vars if v.startswith(_PIO_VAR_PREFIX)
+        }
 
         for aname, ainfo in self._all_attrs.items():
-            # Skip attributes that belong to variables
+            # Skip attributes that belong to variables in the PIO namespace
             if aname.startswith("/__pio__/"):
                 continue
             # Skip if this looks like a variable attribute (contains / after first segment)
             parts = aname.split("/")
-            if len(parts) > 1 and parts[0] in var_names:
+            if len(parts) > 1 and (parts[0] in var_names or parts[0] in short_var_names):
                 continue
             attrs[aname] = _parse_attr_value(ainfo)
 
