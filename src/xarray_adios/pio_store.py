@@ -100,7 +100,7 @@ class PioStore:
         dims: dict[str, int] = {}
         for vname in self._all_vars:
             if vname.startswith(_PIO_DIM_PREFIX):
-                dim_name = vname[len(_PIO_DIM_PREFIX):]
+                dim_name = vname[len(_PIO_DIM_PREFIX) :]
                 var = self._io.inquire_variable(vname)
                 val = np.zeros(1, dtype=np.uint64)
                 self._engine.get(var, val)
@@ -126,7 +126,7 @@ class PioStore:
             if not vname.startswith(_PIO_VAR_PREFIX):
                 continue
 
-            short_name = vname[len(_PIO_VAR_PREFIX):]
+            short_name = vname[len(_PIO_VAR_PREFIX) :]
             var = self._io.inquire_variable(vname)
             if var is None:
                 continue
@@ -308,9 +308,8 @@ class PioStore:
                 return (dname,), (dsize,)
 
         # 2D: try lat × lon, ncol, etc.
-        if "lat" in avail and "lon" in avail:
-            if n == avail["lat"] * avail["lon"]:
-                return ("lat", "lon"), (avail["lat"], avail["lon"])
+        if "lat" in avail and "lon" in avail and n == avail["lat"] * avail["lon"]:
+            return ("lat", "lon"), (avail["lat"], avail["lon"])
 
         # lev × ncol or lev × (lat × lon)
         if "lev" in avail:
@@ -320,9 +319,8 @@ class PioStore:
                 for dname, dsize in avail.items():
                     if dname != "lev" and remaining == dsize:
                         return ("lev", dname), (nlev, dsize)
-                if "lat" in avail and "lon" in avail:
-                    if remaining == avail["lat"] * avail["lon"]:
-                        return ("lev", "lat", "lon"), (nlev, avail["lat"], avail["lon"])
+                if "lat" in avail and "lon" in avail and remaining == avail["lat"] * avail["lon"]:
+                    return ("lev", "lat", "lon"), (nlev, avail["lat"], avail["lon"])
 
         return None
 
@@ -355,10 +353,10 @@ class PioStore:
             var_prefix = f"{pio_name}/"
             short_prefix = f"{short_name}/"
             if aname.startswith(var_prefix):
-                attr_name = aname[len(var_prefix):]
+                attr_name = aname[len(var_prefix) :]
                 attrs[attr_name] = _parse_attr_value(ainfo)
             elif aname.startswith(short_prefix):
-                attr_name = aname[len(short_prefix):]
+                attr_name = aname[len(short_prefix) :]
                 attrs[attr_name] = _parse_attr_value(ainfo)
 
         return attrs

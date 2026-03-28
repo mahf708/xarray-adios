@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-import numpy as np
+from typing import TYPE_CHECKING
+
 from xarray.backends.common import BackendArray
 from xarray.core import indexing
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class AdiosBackendArray(BackendArray):

@@ -6,7 +6,6 @@ variables are read as-is using their native ADIOS shapes and metadata.
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 import adios2
@@ -160,7 +159,7 @@ class AdiosStore:
         prefix = f"{var_name}/"
         for aname, ainfo in self._all_attrs.items():
             if aname.startswith(prefix):
-                attr_name = aname[len(prefix):]
+                attr_name = aname[len(prefix) :]
                 attrs[attr_name] = _parse_attr_value(ainfo)
         return attrs
 

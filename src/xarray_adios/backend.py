@@ -12,14 +12,15 @@ or is a generic ADIOS BP file, and selects the appropriate store.
 from __future__ import annotations
 
 import logging
-import os
 import threading
-from typing import Any, Iterable
+from typing import TYPE_CHECKING
 
-import numpy as np
 import xarray as xr
 from xarray.backends.common import BackendEntrypoint
 from xarray.core import indexing
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 from ._array import AdiosBackendArray
 from .adios_store import AdiosStore
@@ -157,7 +158,6 @@ def _decode_cf(
     for name, var in ds.variables.items():
         attrs = dict(var.attrs)
         encoding = {}
-        data = var
 
         if mask_and_scale:
             # Handle _FillValue

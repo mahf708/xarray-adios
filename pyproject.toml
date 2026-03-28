@@ -19,6 +19,8 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-cov",
+    "ruff",
+    "mypy",
 ]
 
 [project.entry-points."xarray.backends"]
@@ -26,3 +28,34 @@ adios = "xarray_adios.backend:AdiosBackendEntrypoint"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xarray_adios"]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "UP007",  # use X | Y for union types (need py3.9 compat)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # importorskip requires imports after skip check
+
+[tool.ruff.lint.isort]
+known-first-party = ["xarray_adios"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"

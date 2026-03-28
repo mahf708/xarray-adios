@@ -1,7 +1,5 @@
 """Test fixtures for xarray-adios."""
 
-import os
-
 import pytest
 
 # Skip all tests requiring adios2 if it's not installed
@@ -74,10 +72,12 @@ def write_pio_bp(path, variables, dimensions, var_attrs=None, global_attrs=None)
 
     # Define dimension variables
     for dname, dsize in dimensions.items():
-        dim_var = io.define_variable(
+        io.define_variable(
             f"/__pio__/dim/{dname}",
             np.array([dsize], dtype=np.uint64),
-            [1], [0], [1],
+            [1],
+            [0],
+            [1],
         )
 
     # Define science variables as local arrays (simulating block writes)
@@ -87,7 +87,8 @@ def write_pio_bp(path, variables, dimensions, var_attrs=None, global_attrs=None)
         io.define_variable(
             f"/__pio__/var/{vname}",
             data,
-            [], [],  # no global shape (local variable)
+            [],
+            [],  # no global shape (local variable)
             data.shape,
         )
 
