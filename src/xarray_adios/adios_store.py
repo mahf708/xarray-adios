@@ -92,7 +92,10 @@ class AdiosStore:
                     shape = ()
                 else:
                     # Try block info
-                    bi = self._engine.blocks_info(vname, 0)
+                    try:
+                        bi = self._engine.blocks_info(vname, 0)
+                    except UnicodeDecodeError:
+                        bi = []
                     if bi:
                         count_str = bi[0].get("Count", "")
                         if count_str:

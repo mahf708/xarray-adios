@@ -159,7 +159,13 @@ class PioStore:
                 continue
 
             # Read block info to determine shape
-            block_info = self._engine.blocks_info(vname, 0)
+            try:
+                block_info = self._engine.blocks_info(vname, 0)
+            except UnicodeDecodeError:
+                logger.debug(
+                    "Skipping variable %s: blocks_info raised UnicodeDecodeError", short_name
+                )
+                continue
             nblocks = len(block_info)
             block_counts = [int(bi["Count"]) for bi in block_info]
             total_elements = sum(block_counts)
@@ -376,7 +382,13 @@ class PioStore:
             if var is None:
                 raise KeyError(f"Decomposition map not found: {pio_name}")
 
-            bi = self._engine.blocks_info(pio_name, 0)
+            try:
+                bi = self._engine.blocks_info(pio_name, 0)
+            except UnicodeDecodeError as exc:
+                raise KeyError(
+                    f"Cannot read decomposition map {pio_name}: "
+                    "blocks_info raised UnicodeDecodeError"
+                ) from exc
             nblocks = len(bi)
             counts = [int(b["Count"]) for b in bi]
             # Determine the underlying integer dtype
@@ -456,7 +468,10 @@ class PioStore:
         decomp_sigs: dict[str, tuple[int, ...]] = {}
         for ioid in decomp_ids:
             dname = f"{_PIO_DECOMP_PREFIX}{ioid}"
-            bi = self._engine.blocks_info(dname, 0)
+            try:
+                bi = self._engine.blocks_info(dname, 0)
+            except UnicodeDecodeError:
+                continue
             decomp_sigs[ioid] = tuple(int(b["Count"]) for b in bi)
 
         # For each variable, check if its block counts (or a sub-multiple for
@@ -468,7 +483,10 @@ class PioStore:
             if short in mapping:
                 continue
 
-            bi = self._engine.blocks_info(vname, 0)
+            try:
+                bi = self._engine.blocks_info(vname, 0)
+            except UnicodeDecodeError:
+                continue
             var_counts = tuple(int(b["Count"]) for b in bi)
             nvar = len(var_counts)
 
@@ -778,6 +796,7 @@ def _parse_attr_value(attr_info: dict) -> Any:
     """Parse an ADIOS attribute info dict into a Python value."""
     value = attr_info.get("Value", "")
     atype = attr_info.get("Type", "")
+    nelements = int(attr_info.get("Elements", "1"))
 
     if atype == "string":
         # Strip surrounding quotes if present
@@ -785,8 +804,16 @@ def _parse_attr_value(attr_info: dict) -> Any:
             value = value[1:-1]
         return value
     elif atype in ("float", "double"):
+        if nelements > 1 or (isinstance(value, str) and value.startswith("{")):
+            # Array attribute like "{ 1.0, 2.0 }"
+            items = value.strip("{ }").split(",")
+            return np.array([float(x.strip()) for x in items if x.strip()])
         return float(value)
     elif "int" in atype:
+        if nelements > 1 or (isinstance(value, str) and value.startswith("{")):
+            # Array attribute like "{ 15, 30 }"
+            items = value.strip("{ }").split(",")
+            return np.array([int(x.strip()) for x in items if x.strip()])
         return int(value)
     else:
         return value

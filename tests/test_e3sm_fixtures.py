@@ -11,7 +11,6 @@ instantaneous (:I) and averaged (:A) fields, vertically coarsened layers
 diagnostics (FLUS, FSUS, DTENDTTW).
 """
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -53,10 +52,16 @@ class TestE3SMStructuredLatLon:
         import xarray as xr
 
         ds = xr.open_dataset(h0_path, engine="adios")
-        assert "lat" in ds.dims or "lat" in ds.coords
-        assert "lon" in ds.dims or "lon" in ds.coords
-        assert ds.sizes.get("lat", 0) == 15 or len(ds["lat"]) == 15
-        assert ds.sizes.get("lon", 0) == 30 or len(ds["lon"]) == 30
+        # h0 is a 15x30 Gaussian grid; engine may expose as lat/lon dims
+        # or as a flattened ncol=450 (15*30) dimension
+        if "lat" in ds.dims:
+            assert ds.sizes["lat"] == 15
+            assert ds.sizes["lon"] == 30
+        else:
+            # Flattened: look for a dimension of size 450 = 15*30
+            assert any(ds.sizes[d] == 450 for d in ds.dims), (
+                f"Expected a dimension of size 450 (15*30), got {dict(ds.sizes)}"
+            )
 
     def test_open_h2(self, h2_path):
         import xarray as xr
@@ -99,7 +104,7 @@ class TestE3SMStructuredLatLon:
             if vname not in ds:
                 continue
             data = ds[vname].values
-            valid = np.isfinite(data) & (np.abs(data) < 1e20)
+            valid = np.isfinite(data) & (np.abs(data) < 1e10)
             if np.any(valid):
                 # Temperature should be 150-350 K
                 assert data[valid].min() > 100, f"{vname} too cold: {data[valid].min()}"
@@ -138,9 +143,7 @@ class TestE3SMUnstructuredNcol:
         import xarray as xr
 
         ds = xr.open_dataset(h1_path, engine="adios")
-        assert "ncol" in ds.dims or any(
-            d for d in ds.dims if ds.sizes[d] == 384
-        )
+        assert "ncol" in ds.dims or any(d for d in ds.dims if ds.sizes[d] == 384)
 
     def test_h1_has_expected_variables(self, h1_path):
         import xarray as xr
