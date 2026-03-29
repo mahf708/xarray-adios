@@ -11,7 +11,7 @@ from typing import Any
 import adios2
 import numpy as np
 
-from .pio_store import _ADIOS_TYPE_MAP, _parse_attr_value
+from ._common import _ADIOS_TYPE_MAP, parse_attr_value
 
 
 class AdiosVariableInfo:
@@ -163,7 +163,7 @@ class AdiosStore:
         for aname, ainfo in self._all_attrs.items():
             if aname.startswith(prefix):
                 attr_name = aname[len(prefix) :]
-                attrs[attr_name] = _parse_attr_value(ainfo)
+                attrs[attr_name] = parse_attr_value(ainfo)
         return attrs
 
     def get_global_attrs(self) -> dict[str, Any]:
@@ -175,7 +175,7 @@ class AdiosStore:
             parts = aname.split("/")
             if len(parts) > 1 and parts[0] in var_names:
                 continue
-            attrs[aname] = _parse_attr_value(ainfo)
+            attrs[aname] = parse_attr_value(ainfo)
 
         return attrs
 
