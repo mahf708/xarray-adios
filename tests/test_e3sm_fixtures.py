@@ -26,6 +26,9 @@ pytestmark = pytest.mark.skipif(
     reason="E3SM BP fixture files not found",
 )
 
+MF_FILES = sorted(FIXTURE_DIR.glob("eam_h0_mf_t*.nc.bp"))
+has_mf_fixtures = len(MF_FILES) >= 2
+
 
 @pytest.fixture
 def h0_path():
@@ -211,3 +214,60 @@ class TestE3SMCrossComparison:
         # They should largely overlap (h0 has same fincl as h1)
         common = vars0 & vars1
         assert len(common) > 10, f"Too few common variables: {common}"
+
+
+@pytest.mark.skipif(not has_mf_fixtures, reason="Multi-file BP fixtures not found")
+class TestE3SMMultiFile:
+    """Tests for open_mfdataset across multiple BP files."""
+
+    def test_open_mfdataset_concat(self):
+        """open_mfdataset should concatenate frames across files."""
+        import xarray as xr
+
+        ds_single = xr.open_dataset(str(MF_FILES[0]), engine="adios")
+        frame_dim = [d for d in ds_single.dims if "frame" in d][0]
+        nframes_single = ds_single.sizes[frame_dim]
+
+        ds_mf = xr.open_mfdataset(
+            [str(p) for p in MF_FILES],
+            engine="adios",
+            combine="nested",
+            concat_dim=frame_dim,
+        )
+        # Total frames = nfiles × frames_per_file
+        assert ds_mf.sizes[frame_dim] == len(MF_FILES) * nframes_single
+        ds_single.close()
+        ds_mf.close()
+
+    def test_mfdataset_variables_consistent(self):
+        """All files should expose the same variable set."""
+        import xarray as xr
+
+        datasets = [xr.open_dataset(str(p), engine="adios") for p in MF_FILES]
+        var_sets = [set(ds.data_vars) for ds in datasets]
+        for ds in datasets:
+            ds.close()
+
+        # All files should have the same variables
+        assert all(v == var_sets[0] for v in var_sets[1:]), (
+            f"Variable mismatch across files: {[v - var_sets[0] for v in var_sets[1:]]}"
+        )
+
+    def test_mfdataset_ps_physical_range(self):
+        """PS values should be physical across all concatenated files."""
+        import xarray as xr
+
+        ds_mf = xr.open_mfdataset(
+            [str(p) for p in MF_FILES],
+            engine="adios",
+            combine="nested",
+            concat_dim=[
+                d for d in xr.open_dataset(str(MF_FILES[0]), engine="adios").dims if "frame" in d
+            ][0],
+        )
+        ps = ds_mf["PS"].values
+        valid = np.isfinite(ps) & (ps > 0)
+        assert np.any(valid), "No valid PS data in multi-file dataset"
+        assert ps[valid].min() > 50000, f"PS min too low: {ps[valid].min()}"
+        assert ps[valid].max() < 120000, f"PS max too high: {ps[valid].max()}"
+        ds_mf.close()

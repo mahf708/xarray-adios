@@ -21,6 +21,7 @@ dev = [
     "pytest-cov",
     "ruff",
     "mypy",
+    "dask",
 ]
 
 [project.entry-points."xarray.backends"]
