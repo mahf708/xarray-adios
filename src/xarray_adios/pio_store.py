@@ -16,6 +16,7 @@ Reconstruction strategies:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import warnings
 from typing import Any
@@ -323,6 +324,11 @@ class PioStore:
     def read_variable(self, name: str, key: tuple | None = None) -> np.ndarray:
         """Read a variable, reconstructing the global array from blocks.
 
+        When *key* selects a subset of frames (the first dimension for
+        multi-frame variables), only the corresponding ADIOS blocks are
+        read from disk.  This avoids loading the entire variable into
+        memory when only a few timesteps are needed.
+
         Parameters
         ----------
         name : str
@@ -344,6 +350,13 @@ class PioStore:
             self._engine.perform_gets()
             return buf.reshape(())
 
+        # Try frame-selective read when a key is provided
+        if key is not None and len(info.shape) >= 2:
+            result = self._try_frame_selective_read(info, key)
+            if result is not None:
+                return result
+
+        # Fallback: read everything, then slice
         if info.decomp_id is not None:
             full = self._read_blocks_decomp(info)
         else:
@@ -354,15 +367,169 @@ class PioStore:
 
         return full
 
+    def _try_frame_selective_read(self, info: VariableInfo, key: tuple) -> np.ndarray | None:
+        """Attempt a frame-selective read, returning None if not applicable.
+
+        This optimisation avoids reading all blocks when only a subset of
+        frames (the leading dimension) is requested.  It applies when:
+
+        * The variable has ≥ 2 dimensions (i.e. has a frame/time axis).
+        * The block layout allows mapping block IDs → frame indices.
+        """
+        nframes = info.shape[0]
+
+        # Parse the frame selector from the first element of key
+        frame_key = key[0]
+        remaining_key = key[1:]
+
+        if isinstance(frame_key, (int, np.integer)):
+            frame_indices = [int(frame_key)]
+            squeeze_frame = True
+        elif isinstance(frame_key, slice):
+            frame_indices = list(range(*frame_key.indices(nframes)))
+            squeeze_frame = False
+            if len(frame_indices) == nframes:
+                return None  # Full read — no benefit, use normal path
+        else:
+            return None  # Fancy indexing — fall back
+
+        if info.decomp_id is not None:
+            return self._read_frames_decomp(info, frame_indices, squeeze_frame, remaining_key)
+        else:
+            return self._read_frames_concat(info, frame_indices, squeeze_frame, remaining_key)
+
+    def _read_frames_concat(
+        self,
+        info: VariableInfo,
+        frame_indices: list[int],
+        squeeze_frame: bool,
+        remaining_key: tuple,
+    ) -> np.ndarray | None:
+        """Read selected frames for a concat+reshape variable.
+
+        Requires that nblocks == nframes (one block per frame).
+        """
+        nframes = info.shape[0]
+        spatial_shape = info.shape[1:]
+        spatial_size = 1
+        for s in spatial_shape:
+            spatial_size *= s
+
+        if info.nblocks != nframes:
+            return None  # Can't map blocks → frames
+
+        # Verify each block has exactly spatial_size elements
+        if not all(c == spatial_size for c in info.block_counts):
+            return None
+
+        # Read only the needed blocks
+        selected = self._read_selected_blocks(
+            info.pio_name, frame_indices, info.block_counts, info.dtype
+        )
+
+        frames = []
+        for block in selected:
+            try:
+                frames.append(block.reshape(spatial_shape))
+            except ValueError:
+                return None  # Shape mismatch — fall back
+
+        result = np.stack(frames, axis=0)
+
+        if squeeze_frame:
+            result = result[0]
+
+        if remaining_key and any(k != slice(None) for k in remaining_key):
+            result = result[remaining_key]
+
+        return result
+
+    def _read_frames_decomp(
+        self,
+        info: VariableInfo,
+        frame_indices: list[int],
+        squeeze_frame: bool,
+        remaining_key: tuple,
+    ) -> np.ndarray | None:
+        """Read selected frames for a decomp-reconstructed variable.
+
+        Handles two block layouts:
+        * **Separate blocks**: ``nblocks == nranks × nframes`` — only read
+          the blocks belonging to the requested frames.
+        * **Embedded frames**: ``nblocks == nranks`` — must read all blocks
+          but only scatter the requested frame slices.
+        """
+        assert info.decomp_id is not None
+        decomp_rank_blocks = self._get_decomp_rank_blocks(info.decomp_id)
+        all_indices = np.concatenate(decomp_rank_blocks)
+        spatial_size = int(np.max(all_indices))
+
+        nranks = len(decomp_rank_blocks)
+        nframes_total = info.shape[0]
+
+        if info.nblocks == nranks * nframes_total:
+            # Separate blocks per frame — read only blocks for requested frames
+            result = np.zeros((len(frame_indices), spatial_size), dtype=info.dtype)
+            for out_f, src_f in enumerate(frame_indices):
+                block_ids = list(range(src_f * nranks, (src_f + 1) * nranks))
+                frame_blocks = self._read_selected_blocks(
+                    info.pio_name, block_ids, info.block_counts, info.dtype
+                )
+                for r in range(nranks):
+                    dmap = decomp_rank_blocks[r]
+                    valid = dmap > 0
+                    result[out_f, dmap[valid] - 1] = frame_blocks[r][valid]
+
+        elif info.nblocks == nranks:
+            # Embedded frames — must read all blocks, but only scatter requested frames
+            all_data = self._read_raw_blocks(
+                info.pio_name, info.nblocks, info.block_counts, info.dtype
+            )
+            result = np.zeros((len(frame_indices), spatial_size), dtype=info.dtype)
+            for r in range(nranks):
+                dmap = decomp_rank_blocks[r]
+                data = all_data[r]
+                stride = len(dmap)
+                valid = dmap > 0
+                for out_f, src_f in enumerate(frame_indices):
+                    frame_data = data[src_f * stride : (src_f + 1) * stride]
+                    result[out_f, dmap[valid] - 1] = frame_data[valid]
+        else:
+            return None  # Unknown layout — fall back
+
+        # Reshape spatial dims if needed (e.g. for 3D+ variables)
+        spatial_shape = info.shape[1:]
+        if spatial_shape != (spatial_size,):
+            with contextlib.suppress(ValueError):
+                result = result.reshape((len(frame_indices), *spatial_shape))
+
+        if squeeze_frame:
+            result = result[0]
+
+        if remaining_key and any(k != slice(None) for k in remaining_key):
+            result = result[remaining_key]
+
+        return result
+
     def _read_raw_blocks(
         self, pio_name: str, nblocks: int, block_counts: list[int], dtype: np.dtype
     ) -> list[np.ndarray]:
         """Read all blocks for a variable and return them as a list."""
+        return self._read_selected_blocks(pio_name, list(range(nblocks)), block_counts, dtype)
+
+    def _read_selected_blocks(
+        self,
+        pio_name: str,
+        block_ids: list[int],
+        block_counts: list[int],
+        dtype: np.dtype,
+    ) -> list[np.ndarray]:
+        """Read specific blocks by ID and return them as a list."""
         var = self._io.inquire_variable(pio_name)
         var.set_step_selection((0, 1))
 
         blocks: list[np.ndarray] = []
-        for bid in range(nblocks):
+        for bid in block_ids:
             var.set_block_selection(bid)
             count = block_counts[bid]
             block = np.zeros(count, dtype=dtype)
