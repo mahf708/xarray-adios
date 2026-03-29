@@ -391,3 +391,130 @@ class TestE3SMBackendFeatures:
         for name in ds.data_vars:
             data = ds[name].values
             assert isinstance(data, np.ndarray), f"{name} failed to load"
+
+
+class TestFrameSelectiveReading:
+    """Tests for frame-selective lazy reading (time-dimension optimization)."""
+
+    def test_h0_single_frame_correctness(self, h0_path):
+        """Selecting one timestep should match full-read then slice."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        full = ds["PS"].values  # (3, 15, 30)
+        for t in range(full.shape[0]):
+            frame = ds["PS"][t].values
+            np.testing.assert_array_equal(frame, full[t])
+
+    def test_h0_slice_frames(self, h0_path):
+        """Slicing a range of timesteps should match full-read then slice."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        full = ds["PS"].values
+        np.testing.assert_array_equal(ds["PS"][0:2].values, full[0:2])
+        np.testing.assert_array_equal(ds["PS"][1:3].values, full[1:3])
+
+    def test_h1_single_frame_correctness(self, h1_path):
+        """Decomp path: single frame should match full-read then slice."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h1_path, engine="adios")
+        full = ds["PS"].values  # (3, 384)
+        for t in range(full.shape[0]):
+            frame = ds["PS"][t].values
+            np.testing.assert_array_equal(frame, full[t])
+
+    def test_h1_slice_frames(self, h1_path):
+        """Decomp path: sliced frames should match full-read then slice."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h1_path, engine="adios")
+        full = ds["PS"].values
+        np.testing.assert_array_equal(ds["PS"][0:2].values, full[0:2])
+        np.testing.assert_array_equal(ds["PS"][1:3].values, full[1:3])
+
+    def test_mixed_time_spatial_slice(self, h0_path):
+        """Time + spatial slice should be correct."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        full = ds["PS"].values  # (3, 15, 30)
+        np.testing.assert_array_equal(ds["PS"][0, 5:10].values, full[0, 5:10])
+        np.testing.assert_array_equal(ds["PS"][1, :, 10:20].values, full[1, :, 10:20])
+
+    def test_h1_mixed_time_spatial_slice(self, h1_path):
+        """Decomp path: time + spatial slice should be correct."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h1_path, engine="adios")
+        full = ds["PS"].values  # (3, 384)
+        np.testing.assert_array_equal(ds["PS"][2, 100:200].values, full[2, 100:200])
+
+    def test_frame_selective_reads_fewer_blocks(self, h0_path):
+        """Verify that single-frame access reads fewer blocks than full read."""
+        from unittest.mock import patch
+
+        from xarray_adios.pio_store import PioStore
+
+        store = PioStore(h0_path)
+        store.get_variables()  # populate metadata
+
+        # Count block reads for full variable
+        with patch.object(
+            store, "_read_selected_blocks", wraps=store._read_selected_blocks
+        ) as mock:
+            _ = store.read_variable("PS")
+            full_block_ids = [call.args[1] for call in mock.call_args_list]
+
+        # Count block reads for single frame
+        with patch.object(
+            store, "_read_selected_blocks", wraps=store._read_selected_blocks
+        ) as mock:
+            _ = store.read_variable("PS", key=(0, slice(None), slice(None)))
+            frame_block_ids = [call.args[1] for call in mock.call_args_list]
+
+        # Frame-selective should read fewer blocks
+        total_full = sum(len(ids) for ids in full_block_ids)
+        total_frame = sum(len(ids) for ids in frame_block_ids)
+        assert total_frame < total_full, (
+            f"Expected fewer block reads: frame={total_frame}, full={total_full}"
+        )
+        store.close()
+
+    def test_h1_frame_selective_reads_fewer_blocks(self, h1_path):
+        """Decomp path: single-frame access should read fewer blocks."""
+        from unittest.mock import patch
+
+        from xarray_adios.pio_store import PioStore
+
+        store = PioStore(h1_path)
+        store.get_variables()
+
+        with patch.object(
+            store, "_read_selected_blocks", wraps=store._read_selected_blocks
+        ) as mock:
+            _ = store.read_variable("PS")
+            full_block_ids = [call.args[1] for call in mock.call_args_list]
+
+        with patch.object(
+            store, "_read_selected_blocks", wraps=store._read_selected_blocks
+        ) as mock:
+            _ = store.read_variable("PS", key=(0, slice(None)))
+            frame_block_ids = [call.args[1] for call in mock.call_args_list]
+
+        total_full = sum(len(ids) for ids in full_block_ids)
+        total_frame = sum(len(ids) for ids in frame_block_ids)
+        assert total_frame < total_full, (
+            f"Expected fewer block reads: frame={total_frame}, full={total_full}"
+        )
+        store.close()
+
+    def test_scalar_unaffected(self, h0_path):
+        """Scalar variables should still work (no frame dimension)."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        p0 = ds["P0"].values
+        assert p0.shape == ()
+        assert p0 == 100000.0
