@@ -33,7 +33,7 @@ def write_simple_bp(path, variables, dimensions=None, attrs=None):
 
     for name, data in variables.items():
         data = np.asarray(data)
-        var = io.define_variable(name, data, data.shape, [0] * data.ndim, data.shape)
+        io.define_variable(name, data, data.shape, [0] * data.ndim, data.shape)
 
     if attrs:
         for aname, aval in attrs.items():

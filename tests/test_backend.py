@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-adios2 = pytest.importorskip("adios2")
+pytest.importorskip("adios2")
 
 from xarray_adios.backend import AdiosBackendEntrypoint
 from xarray_adios.pio_store import PioStore, is_pio_file

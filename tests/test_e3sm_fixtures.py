@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-adios2 = pytest.importorskip("adios2")
+pytest.importorskip("adios2")
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
@@ -233,12 +233,15 @@ class TestE3SMMultiFile:
 
     def test_mfdataset_variables_consistent(self):
         """All files should expose the same variable set."""
+        from contextlib import ExitStack
+
         import xarray as xr
 
-        datasets = [xr.open_dataset(str(p), engine="adios") for p in MF_FILES]
-        var_sets = [set(ds.data_vars) for ds in datasets]
-        for ds in datasets:
-            ds.close()
+        with ExitStack() as stack:
+            datasets = [
+                stack.enter_context(xr.open_dataset(str(p), engine="adios")) for p in MF_FILES
+            ]
+            var_sets = [set(ds.data_vars) for ds in datasets]
 
         assert all(v == var_sets[0] for v in var_sets[1:]), (
             f"Variable mismatch across files: {[v - var_sets[0] for v in var_sets[1:]]}"
