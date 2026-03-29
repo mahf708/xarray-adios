@@ -248,8 +248,30 @@ class PioStore:
             block_counts = [int(bi["Count"]) for bi in block_info]
             total_elements = sum(block_counts)
 
-            # Decomp ID: prefer def/decomp attribute, fall back to heuristic
+            # Detect scalars: SingleValue or ndims=0 with 0 data elements
             vdef = var_defs.get(short_name, {})
+            vinfo_dict = self._all_vars[vname]
+            is_scalar = vinfo_dict.get("SingleValue", "") == "true"
+            if not is_scalar:
+                ndims_val = vdef.get("ndims")
+                if ndims_val is not None and int(ndims_val) == 0:
+                    is_scalar = True
+
+            if is_scalar:
+                variables[short_name] = VariableInfo(
+                    name=short_name,
+                    pio_name=vname,
+                    dims=(),
+                    shape=(),
+                    dtype=np.dtype(dtype),
+                    attrs=self._read_var_attrs(vname, short_name),
+                    nblocks=nblocks,
+                    block_counts=block_counts,
+                    decomp_id=None,
+                )
+                continue
+
+            # Decomp ID: prefer def/decomp attribute, fall back to heuristic
             decomp_id = None
             def_decomp = vdef.get("decomp")
             if def_decomp is not None:
@@ -266,7 +288,7 @@ class PioStore:
                 if result is not None:
                     var_dims, var_shape = result
 
-            if var_dims is None:
+            if var_dims is None or var_shape is None:
                 var_dims, var_shape = self._infer_dims_and_shape(
                     short_name,
                     total_elements,
@@ -313,6 +335,14 @@ class PioStore:
         np.ndarray
         """
         info = self.get_variables()[name]
+
+        # Scalar: read via ADIOS get (SingleValue)
+        if info.shape == ():
+            var = self._io.inquire_variable(info.pio_name)
+            buf = np.zeros(1, dtype=info.dtype)
+            self._engine.get(var, buf)
+            self._engine.perform_gets()
+            return buf.reshape(())
 
         if info.decomp_id is not None:
             full = self._read_blocks_decomp(info)
