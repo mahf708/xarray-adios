@@ -134,6 +134,8 @@ class PioStore:
         payload_bytes = raw_count - header_bytes
         if payload_bytes <= 0:
             return None
+        if payload_bytes % real_dtype.itemsize != 0:
+            return None
         total_elements = payload_bytes // real_dtype.itemsize
 
         def_dims = vdef.get("dims")
@@ -367,7 +369,7 @@ class PioStore:
                 if attr_name:
                     self._attrs_by_pio.setdefault(var_path, {})[attr_name] = parse_attr_value(ainfo)
             else:
-                if "/" not in aname:
+                if "/" not in aname or aname.startswith("/"):
                     continue
                 short_name, _, attr_name = aname.partition("/")
                 if attr_name:

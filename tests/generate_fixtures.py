@@ -139,16 +139,18 @@ class PioFixtureBuilder:
                 [1],
             )
 
-        # Decomposition map variables (one block per rank)
+        # Decomposition map variables (define once per ioid, write multiple blocks)
         for ioid, rank_maps in self._decomp_maps.items():
-            for _rank, rmap in enumerate(rank_maps):
-                io.define_variable(
-                    f"/__pio__/decomp/{ioid}",
-                    rmap,
-                    [],
-                    [],
-                    rmap.shape,
-                )
+            if not rank_maps:
+                continue
+            first_map = rank_maps[0]
+            io.define_variable(
+                f"/__pio__/decomp/{ioid}",
+                first_map,
+                [],
+                [],
+                first_map.shape,
+            )
 
         # Science variables
         var_data: dict[str, np.ndarray] = {}

@@ -35,10 +35,11 @@ def dims_from_def(
     unknown_idx: int | None = None
 
     for i, d in enumerate(dim_names):
-        size = dims.get(d, 0)
+        size = dims.get(d, -1)
         if size > 0:
             shape.append(size)
-        elif d == "time" or size == 0:
+        elif d == "time" or (d in dims and size == 0):
+            # Unlimited / explicitly-zero dimension — infer from data
             if unknown_idx is not None:
                 return None  # multiple unknowns
             unknown_idx = i
