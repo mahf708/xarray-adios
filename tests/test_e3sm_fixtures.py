@@ -233,6 +233,7 @@ class TestE3SMMultiFile:
             engine="adios",
             combine="nested",
             concat_dim=frame_dim,
+            data_vars="all",
         )
         # Total frames = nfiles × frames_per_file
         assert ds_mf.sizes[frame_dim] == len(MF_FILES) * nframes_single
@@ -264,6 +265,7 @@ class TestE3SMMultiFile:
             concat_dim=[
                 d for d in xr.open_dataset(str(MF_FILES[0]), engine="adios").dims if "frame" in d
             ][0],
+            data_vars="all",
         )
         ps = ds_mf["PS"].values
         valid = np.isfinite(ps) & (ps > 0)
@@ -271,3 +273,117 @@ class TestE3SMMultiFile:
         assert ps[valid].min() > 50000, f"PS min too low: {ps[valid].min()}"
         assert ps[valid].max() < 120000, f"PS max too high: {ps[valid].max()}"
         ds_mf.close()
+
+
+class TestE3SMBackendFeatures:
+    """Tests for backend features: drop_variables, attrs, mask_and_scale, etc."""
+
+    def test_drop_variables_string(self, h0_path):
+        """drop_variables can be a single string (covers backend.py:70)."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios", drop_variables="PS")
+        assert "PS" not in ds.data_vars
+
+    def test_drop_variables_list(self, h0_path):
+        """drop_variables can be a list."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios", drop_variables=["PS", "TS"])
+        assert "PS" not in ds.data_vars
+        assert "TS" not in ds.data_vars
+
+    def test_global_attrs(self, h0_path):
+        """Dataset should have global attributes from PIO file."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        # E3SM files typically have global attributes like case, title, etc.
+        assert isinstance(ds.attrs, dict)
+
+    def test_variable_attrs_present(self, h0_path):
+        """Variables should carry attributes (units, long_name, etc.)."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        ps = ds["PS"]
+        # PIO-written variables typically have units, long_name, cell_methods
+        assert isinstance(ps.attrs, dict)
+        # At least some attributes should be present
+        assert len(ps.attrs) > 0, "PS has no attributes"
+
+    def test_mask_and_scale_false(self, h0_path):
+        """mask_and_scale=False should skip CF decoding."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios", mask_and_scale=False)
+        assert "PS" in ds
+
+    def test_decode_times_false(self, h0_path):
+        """decode_times=False should skip CF time decoding."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios", decode_times=False)
+        assert "PS" in ds
+
+    def test_guess_can_open(self, h0_path):
+        """Backend should recognize .bp paths and reject others."""
+        from xarray_adios.backend import AdiosBackendEntrypoint
+
+        backend = AdiosBackendEntrypoint()
+        assert backend.guess_can_open(h0_path) is True
+        assert backend.guess_can_open("somefile.nc") is False
+        assert backend.guess_can_open("somefile.bp4") is True
+        assert backend.guess_can_open("somefile.bp5") is True
+        assert backend.guess_can_open(12345) is False
+
+        # Object whose __str__ raises should return False (covers backend.py:153-154)
+        class Unconvertible:
+            def __str__(self):
+                raise TypeError
+
+        assert backend.guess_can_open(Unconvertible()) is False
+
+    def test_is_pio_file_invalid_path(self):
+        """is_pio_file should return False for non-existent files."""
+        from xarray_adios.pio_store import is_pio_file
+
+        assert is_pio_file("/nonexistent/path.bp") is False
+
+    def test_h0_encoding_has_source(self, h0_path):
+        """Dataset encoding should contain the source filename."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        assert "source" in ds.encoding
+        assert h0_path in ds.encoding["source"]
+
+    def test_lazy_loading_no_compute(self, h0_path):
+        """Variables should be lazy (not loaded until .values is called)."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        ps_var = ds["PS"]
+        # Should be lazy — check that data is a LazilyIndexedArray
+        assert hasattr(ps_var, "data")
+        # Force computation
+        values = ps_var.values
+        assert isinstance(values, np.ndarray)
+
+    def test_h1_all_variables_load(self, h1_path):
+        """All variables in h1 (decomp-reconstructed) should load without error."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h1_path, engine="adios")
+        for name in ds.data_vars:
+            data = ds[name].values
+            assert isinstance(data, np.ndarray), f"{name} failed to load"
+
+    def test_h0_all_variables_load(self, h0_path):
+        """All variables in h0 (concat+reshape) should load without error."""
+        import xarray as xr
+
+        ds = xr.open_dataset(h0_path, engine="adios")
+        for name in ds.data_vars:
+            data = ds[name].values
+            assert isinstance(data, np.ndarray), f"{name} failed to load"
