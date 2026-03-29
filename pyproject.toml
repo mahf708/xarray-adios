@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "xarray-adios"
+version = "0.1.0"
+description = "Xarray backend for reading ADIOS BP files, including E3SM/SCORPIO PIO output"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "xarray>=2022.03.0",
+    "numpy",
+    "adios2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "dask",
+]
+
+[project.entry-points."xarray.backends"]
+adios = "xarray_adios.backend:AdiosBackendEntrypoint"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xarray_adios"]
+
+[tool.ruff]
+src = ["src"]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]  # importorskip requires imports after skip check
+
+[tool.ruff.lint.isort]
+known-first-party = ["xarray_adios"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
