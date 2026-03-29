@@ -59,7 +59,7 @@ class AdiosStore:
         """
         dims: dict[str, int] = {}
         for vinfo in self.get_variables().values():
-            for dname, dsize in zip(vinfo.dims, vinfo.shape):
+            for dname, dsize in zip(vinfo.dims, vinfo.shape, strict=True):
                 if dname not in dims:
                     dims[dname] = dsize
         return dims

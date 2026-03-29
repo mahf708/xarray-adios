@@ -246,7 +246,7 @@ class PioStore:
                 )
                 continue
             nblocks = len(block_info)
-            block_counts = [int(bi["Count"]) for bi in block_info]
+            block_counts = [_parse_block_count(bi["Count"]) for bi in block_info]
             total_elements = sum(block_counts)
 
             # Detect scalars: SingleValue or ndims=0 with 0 data elements
@@ -681,7 +681,7 @@ class PioStore:
                     "blocks_info raised UnicodeDecodeError"
                 ) from exc
             nblocks = len(bi)
-            counts = [int(b["Count"]) for b in bi]
+            counts = [_parse_block_count(b["Count"]) for b in bi]
             # Determine the underlying integer dtype
             dtype = _adios_dtype(var)
             if dtype is str:
@@ -759,7 +759,7 @@ class PioStore:
                 bi = self._engine.blocks_info(dname, 0)
             except UnicodeDecodeError:
                 continue
-            decomp_sigs[ioid] = tuple(int(b["Count"]) for b in bi)
+            decomp_sigs[ioid] = tuple(_parse_block_count(b["Count"]) for b in bi)
 
         # For each variable, check if its block counts (or a sub-multiple for
         # multi-frame variables) match exactly one decomposition.
@@ -774,7 +774,7 @@ class PioStore:
                 bi = self._engine.blocks_info(vname, 0)
             except UnicodeDecodeError:
                 continue
-            var_counts = tuple(int(b["Count"]) for b in bi)
+            var_counts = tuple(_parse_block_count(b["Count"]) for b in bi)
             nvar = len(var_counts)
 
             candidates: list[str] = []
@@ -1123,14 +1123,35 @@ def _parse_attr_value(attr_info: dict) -> Any:
         return value
 
 
+def _parse_block_count(count_value: str | int) -> int:
+    """Parse a block Count value which may be a scalar or comma-separated dimensions.
+
+    ADIOS2 ``blocks_info`` reports ``Count`` as a string that can be either
+    a single integer (``"100"``) or a comma-separated shape (``"10,20"``).
+    Returns the total element count (product of dimensions).
+    """
+    s = str(count_value).strip()
+    if "," in s:
+        parts = [int(p) for p in s.split(",") if p.strip()]
+        result = 1
+        for p in parts:
+            result *= p
+        return result
+    return int(s)
+
+
 def is_pio_file(filename: str) -> bool:
     """Check if a BP file was written by PIO (has __pio__ namespace)."""
+    engine = None
     try:
         adios_obj = adios2.Adios()
         io = adios_obj.declare_io("pio_check")
         engine = io.open(str(filename), adios2.Mode.ReadRandomAccess)
         all_vars = io.available_variables()
-        engine.close()
         return any(v.startswith("/__pio__/") for v in all_vars)
     except Exception:
         return False
+    finally:
+        if engine is not None:
+            with contextlib.suppress(Exception):
+                engine.close()
