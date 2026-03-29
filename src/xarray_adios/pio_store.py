@@ -108,6 +108,7 @@ class PioStore:
         self._variable_info: dict[str, VariableInfo] | None = None
         self._decomp_maps: dict[str, list[np.ndarray]] | None = None
         self._var_decomp_map: dict[str, str] | None = None
+        self._var_defs: dict[str, dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------
     # Dimensions
@@ -132,6 +133,82 @@ class PioStore:
         return dims
 
     # ------------------------------------------------------------------
+    # Variable definitions (def/dims, def/decomp from SCORPIO metadata)
+    # ------------------------------------------------------------------
+
+    def _get_var_defs(self) -> dict[str, dict[str, Any]]:
+        """Extract SCORPIO variable definitions from ``def/*`` attributes.
+
+        Returns a dict mapping variable short name → {dims, decomp, ndims, ...}.
+        """
+        if self._var_defs is not None:
+            return self._var_defs
+
+        defs: dict[str, dict[str, Any]] = {}
+        for aname, ainfo in self._all_attrs.items():
+            if not aname.startswith(_PIO_VAR_PREFIX):
+                continue
+            rest = aname[len(_PIO_VAR_PREFIX) :]
+            if "/def/" not in rest:
+                continue
+            var_name, _, def_key = rest.partition("/def/")
+            val = _parse_attr_value(ainfo)
+            defs.setdefault(var_name, {})[def_key] = val
+
+        self._var_defs = defs
+        return defs
+
+    def _dims_from_def(
+        self, def_dims_val: Any, total_elements: int, dims: dict[str, int]
+    ) -> tuple[tuple[str, ...], tuple[int, ...]] | None:
+        """Compute dimension names and shape from a ``def/dims`` attribute value.
+
+        Parameters
+        ----------
+        def_dims_val : str or array-like
+            The raw value of the ``def/dims`` attribute, e.g. ``'{ "time", "ncol" }'``.
+        total_elements : int
+            Total number of data elements across all blocks.
+        dims : dict
+            Dimension name → size mapping from ``get_dimensions()``.
+
+        Returns
+        -------
+        (dim_names, shape) or None if the attribute value cannot be parsed.
+        """
+        dim_names = _parse_string_array(def_dims_val)
+        if not dim_names:
+            return None
+
+        shape: list[int] = []
+        unknown_idx: int | None = None
+
+        for i, d in enumerate(dim_names):
+            size = dims.get(d, 0)
+            if size > 0:
+                shape.append(size)
+            elif d == "time" or size == 0:
+                # Unlimited / unknown — will compute from data
+                if unknown_idx is not None:
+                    return None  # Multiple unknown dims — can't resolve
+                unknown_idx = i
+                shape.append(0)  # placeholder
+            else:
+                return None
+
+        if unknown_idx is not None:
+            known_product = 1
+            for s in shape:
+                if s > 0:
+                    known_product *= s
+            if known_product > 0 and total_elements % known_product == 0:
+                shape[unknown_idx] = total_elements // known_product
+            else:
+                return None
+
+        return tuple(dim_names), tuple(shape)
+
+    # ------------------------------------------------------------------
     # Variable catalog
     # ------------------------------------------------------------------
 
@@ -141,6 +218,7 @@ class PioStore:
             return self._variable_info
 
         dims = self.get_dimensions()
+        var_defs = self._get_var_defs()
         var_decomps = self._get_var_decomp_mapping()
         variables: dict[str, VariableInfo] = {}
 
@@ -170,19 +248,35 @@ class PioStore:
             block_counts = [int(bi["Count"]) for bi in block_info]
             total_elements = sum(block_counts)
 
-            decomp_id = var_decomps.get(short_name)
+            # Decomp ID: prefer def/decomp attribute, fall back to heuristic
+            vdef = var_defs.get(short_name, {})
+            decomp_id = None
+            def_decomp = vdef.get("decomp")
+            if def_decomp is not None:
+                decomp_id = str(def_decomp).strip('"')
+            if decomp_id is None:
+                decomp_id = var_decomps.get(short_name)
 
-            # Infer dimensions and shape — decomp-aware
-            var_dims, var_shape = self._infer_dims_and_shape(
-                short_name,
-                total_elements,
-                block_counts,
-                dims,
-                var,
-                decomp_id=decomp_id,
-            )
+            # Dimension names and shape: prefer def/dims, fall back to heuristic
+            var_dims: tuple[str, ...] | None = None
+            var_shape: tuple[int, ...] | None = None
+            def_dims = vdef.get("dims")
+            if def_dims is not None:
+                result = self._dims_from_def(def_dims, total_elements, dims)
+                if result is not None:
+                    var_dims, var_shape = result
 
-            # Read variable attributes
+            if var_dims is None:
+                var_dims, var_shape = self._infer_dims_and_shape(
+                    short_name,
+                    total_elements,
+                    block_counts,
+                    dims,
+                    var,
+                    decomp_id=decomp_id,
+                )
+
+            # Read variable attributes (exclude def/* internal metadata)
             attrs = self._read_var_attrs(vname, short_name)
 
             variables[short_name] = VariableInfo(
@@ -454,11 +548,7 @@ class PioStore:
                 if suffix not in mapping:
                     mapping[suffix] = str(val)
 
-        if mapping:
-            self._var_decomp_map = mapping
-            return mapping
-
-        # ------ strategy 3: block-count heuristic ------
+        # ------ strategy 3: block-count heuristic (for unmapped vars) ------
         decomp_ids = self.get_decomp_ids()
         if not decomp_ids:
             self._var_decomp_map = {}
@@ -784,6 +874,23 @@ class PioStore:
     def close(self):
         """Close the ADIOS engine."""
         self._engine.close()
+
+
+def _parse_string_array(value: Any) -> tuple[str, ...]:
+    """Parse a SCORPIO string-array attribute into a tuple of strings.
+
+    Handles formats like:
+    - ``'{ "time", "ncol" }'`` → ``("time", "ncol")``
+    - ``'"ncol"'`` → ``("ncol",)``
+    - ``'ncol'`` → ``("ncol",)``
+    """
+    if not isinstance(value, str):
+        return ()
+    s = value.strip()
+    if s.startswith("{"):
+        inner = s.strip("{ }")
+        return tuple(p.strip().strip('"') for p in inner.split(",") if p.strip())
+    return (s.strip('"'),)
 
 
 def _adios_dtype(var) -> type:

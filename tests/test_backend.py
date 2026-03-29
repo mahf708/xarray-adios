@@ -381,13 +381,13 @@ class TestDecompReconstruction:
         t_block = np.array([20.0, 40.0, 10.0, 30.0], dtype=np.float32)
         t_expected = np.array([10.0, 20.0, 30.0, 40.0], dtype=np.float32)
 
-        # lat is a 1-D coordinate — no decomp
-        lat_data = np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+        # lat is a 1-D coordinate — no decomp, different size than decomp
+        lat_data = np.array([1.0, 2.0, 3.0], dtype=np.float64)
 
         write_pio_bp_decomp(
             path,
             variables={"T": t_block, "lat": lat_data},
-            dimensions={"ncol": ncol, "lat": 4},
+            dimensions={"ncol": ncol, "lat": 3},
             decomp_maps={"1": decomp},
             var_decomps={"T": "1"},
         )

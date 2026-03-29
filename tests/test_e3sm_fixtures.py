@@ -225,18 +225,20 @@ class TestE3SMMultiFile:
         import xarray as xr
 
         ds_single = xr.open_dataset(str(MF_FILES[0]), engine="adios")
-        frame_dim = [d for d in ds_single.dims if "frame" in d][0]
-        nframes_single = ds_single.sizes[frame_dim]
+        # Find the time/frame dimension (may be "time" or "frame_N")
+        time_dim = next((d for d in ds_single.dims if d == "time" or d.startswith("frame")), None)
+        assert time_dim is not None, f"No time/frame dim found in {dict(ds_single.sizes)}"
+        nframes_single = ds_single.sizes[time_dim]
 
         ds_mf = xr.open_mfdataset(
             [str(p) for p in MF_FILES],
             engine="adios",
             combine="nested",
-            concat_dim=frame_dim,
+            concat_dim=time_dim,
             data_vars="all",
         )
         # Total frames = nfiles × frames_per_file
-        assert ds_mf.sizes[frame_dim] == len(MF_FILES) * nframes_single
+        assert ds_mf.sizes[time_dim] == len(MF_FILES) * nframes_single
         ds_single.close()
         ds_mf.close()
 
@@ -258,13 +260,15 @@ class TestE3SMMultiFile:
         """PS values should be physical across all concatenated files."""
         import xarray as xr
 
+        ds_single = xr.open_dataset(str(MF_FILES[0]), engine="adios")
+        time_dim = next(d for d in ds_single.dims if d == "time" or d.startswith("frame"))
+        ds_single.close()
+
         ds_mf = xr.open_mfdataset(
             [str(p) for p in MF_FILES],
             engine="adios",
             combine="nested",
-            concat_dim=[
-                d for d in xr.open_dataset(str(MF_FILES[0]), engine="adios").dims if "frame" in d
-            ][0],
+            concat_dim=time_dim,
             data_vars="all",
         )
         ps = ds_mf["PS"].values
