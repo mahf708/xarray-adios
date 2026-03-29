@@ -87,7 +87,7 @@ class AdiosStore:
                 shape = tuple(int(s) for s in shape_str.split(",") if s.strip())
             else:
                 # Local variable or scalar
-                single_val = vinfo_dict.get("SingleValue", "")
+                single_val = str(vinfo_dict.get("SingleValue", "")).strip().lower() == "true"
                 if single_val:
                     shape = ()
                 else:

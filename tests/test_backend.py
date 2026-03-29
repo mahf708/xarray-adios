@@ -128,26 +128,25 @@ class TestOpenDataset:
             global_attrs={"title": "Test E3SM output"},
         )
 
-        ds = xr.open_dataset(path, engine="adios")
+        with xr.open_dataset(path, engine="adios") as ds:
+            # Check coordinates
+            assert "lat" in ds.coords
+            assert "lon" in ds.coords
 
-        # Check coordinates
-        assert "lat" in ds.coords
-        assert "lon" in ds.coords
+            # Check data variable
+            assert "PS" in ds.data_vars
+            assert ds["PS"].dims == ("time", "lat", "lon")
+            assert ds["PS"].shape == (ntime, nlat, nlon)
+            assert ds["PS"].attrs.get("units") == "Pa"
 
-        # Check data variable
-        assert "PS" in ds.data_vars
-        assert ds["PS"].dims == ("time", "lat", "lon")
-        assert ds["PS"].shape == (ntime, nlat, nlon)
-        assert ds["PS"].attrs.get("units") == "Pa"
+            # Check global attrs
+            assert ds.attrs.get("title") == "Test E3SM output"
 
-        # Check global attrs
-        assert ds.attrs.get("title") == "Test E3SM output"
-
-        # Check data values
-        np.testing.assert_array_equal(
-            ds["PS"].values.ravel(),
-            ps_data,
-        )
+            # Check data values
+            np.testing.assert_array_equal(
+                ds["PS"].values.ravel(),
+                ps_data,
+            )
 
     def test_open_generic_dataset(self, tmp_bp_dir):
         """Test opening a generic (non-PIO) BP file."""
@@ -160,10 +159,10 @@ class TestOpenDataset:
             attrs={"source": "test"},
         )
 
-        ds = xr.open_dataset(path, engine="adios")
-        assert "temperature" in ds.data_vars
-        assert ds["temperature"].shape == (5, 10)
-        np.testing.assert_array_equal(ds["temperature"].values, data)
+        with xr.open_dataset(path, engine="adios") as ds:
+            assert "temperature" in ds.data_vars
+            assert ds["temperature"].shape == (5, 10)
+            np.testing.assert_array_equal(ds["temperature"].values, data)
 
     def test_drop_variables(self, tmp_bp_dir):
         path = str(tmp_bp_dir / "drop_test.bp")
@@ -175,9 +174,9 @@ class TestOpenDataset:
             },
             dimensions={"ncol": 10},
         )
-        ds = xr.open_dataset(path, engine="adios", drop_variables=["Q"])
-        assert "T" in ds.data_vars or "T" in ds.coords
-        assert "Q" not in ds
+        with xr.open_dataset(path, engine="adios", drop_variables=["Q"]) as ds:
+            assert "T" in ds.data_vars or "T" in ds.coords
+            assert "Q" not in ds
 
     def test_lazy_loading(self, tmp_bp_dir):
         """Test that data is not loaded until accessed."""
@@ -187,12 +186,12 @@ class TestOpenDataset:
             variables={"T": np.ones(100, dtype=np.float32)},
             dimensions={"ncol": 100},
         )
-        ds = xr.open_dataset(path, engine="adios")
-        # At this point, data should not be loaded yet
-        # Accessing .values triggers loading
-        result = ds["T"].values
-        assert result.shape == (100,)
-        np.testing.assert_array_equal(result, 1.0)
+        with xr.open_dataset(path, engine="adios") as ds:
+            # At this point, data should not be loaded yet
+            # Accessing .values triggers loading
+            result = ds["T"].values
+            assert result.shape == (100,)
+            np.testing.assert_array_equal(result, 1.0)
 
 
 class TestDecompStore:
@@ -452,14 +451,13 @@ class TestDecompOpenDataset:
             global_attrs={"title": "Decomp test"},
         )
 
-        ds = xr.open_dataset(path, engine="adios")
-
-        assert "SST" in ds.data_vars
-        assert ds["SST"].dims == ("ncol",)
-        assert ds["SST"].shape == (ncol,)
-        np.testing.assert_array_equal(ds["SST"].values, expected)
-        assert ds["SST"].attrs.get("units") == "K"
-        assert ds.attrs.get("title") == "Decomp test"
+        with xr.open_dataset(path, engine="adios") as ds:
+            assert "SST" in ds.data_vars
+            assert ds["SST"].dims == ("ncol",)
+            assert ds["SST"].shape == (ncol,)
+            np.testing.assert_array_equal(ds["SST"].values, expected)
+            assert ds["SST"].attrs.get("units") == "K"
+            assert ds.attrs.get("title") == "Decomp test"
 
     def test_open_decomp_dataset_time_spatial(self, tmp_bp_dir):
         """Integration test: time × spatial decomp-mapped variable."""
@@ -488,8 +486,8 @@ class TestDecompOpenDataset:
             var_decomps={"T": "1"},
         )
 
-        ds = xr.open_dataset(path, engine="adios")
-        assert "T" in ds.data_vars
-        assert ds["T"].dims == ("time", "ncol")
-        assert ds["T"].shape == (ntime, ncol)
-        np.testing.assert_array_equal(ds["T"].values, expected)
+        with xr.open_dataset(path, engine="adios") as ds:
+            assert "T" in ds.data_vars
+            assert ds["T"].dims == ("time", "ncol")
+            assert ds["T"].shape == (ntime, ncol)
+            np.testing.assert_array_equal(ds["T"].values, expected)
