@@ -335,7 +335,7 @@ class TestE3SMBackendFeatures:
 
     def test_is_pio_file_invalid_path(self):
         """is_pio_file should return False for non-existent files."""
-        from xarray_adios.pio_store import is_pio_file
+        from xarray_adios._common import is_pio_file
 
         assert is_pio_file("/nonexistent/path.bp") is False
 
@@ -438,22 +438,30 @@ class TestFrameSelectiveReading:
         """Verify that single-frame access reads fewer blocks than full read."""
         from unittest.mock import patch
 
+        from xarray_adios._pio_decomp import _read_selected_blocks
         from xarray_adios.pio_store import PioStore
 
         store = PioStore(h0_path)
         store.get_variables()
 
-        with patch.object(
-            store, "_read_selected_blocks", wraps=store._read_selected_blocks
-        ) as mock:
+        # Patch both the definition site and the import site in _pio_read
+        with (
+            patch(
+                "xarray_adios._pio_decomp._read_selected_blocks", wraps=_read_selected_blocks
+            ) as mock,
+            patch("xarray_adios._pio_read._read_selected_blocks", new=mock),
+        ):
             _ = store.read_variable("PS")
-            full_block_ids = [call.args[1] for call in mock.call_args_list]
+            full_block_ids = [call.args[3] for call in mock.call_args_list]
 
-        with patch.object(
-            store, "_read_selected_blocks", wraps=store._read_selected_blocks
-        ) as mock:
+        with (
+            patch(
+                "xarray_adios._pio_decomp._read_selected_blocks", wraps=_read_selected_blocks
+            ) as mock,
+            patch("xarray_adios._pio_read._read_selected_blocks", new=mock),
+        ):
             _ = store.read_variable("PS", key=(0, slice(None), slice(None)))
-            frame_block_ids = [call.args[1] for call in mock.call_args_list]
+            frame_block_ids = [call.args[3] for call in mock.call_args_list]
 
         total_full = sum(len(ids) for ids in full_block_ids)
         total_frame = sum(len(ids) for ids in frame_block_ids)
@@ -466,22 +474,29 @@ class TestFrameSelectiveReading:
         """Decomp path: single-frame access should read fewer blocks."""
         from unittest.mock import patch
 
+        from xarray_adios._pio_decomp import _read_selected_blocks
         from xarray_adios.pio_store import PioStore
 
         store = PioStore(h1_path)
         store.get_variables()
 
-        with patch.object(
-            store, "_read_selected_blocks", wraps=store._read_selected_blocks
-        ) as mock:
+        with (
+            patch(
+                "xarray_adios._pio_decomp._read_selected_blocks", wraps=_read_selected_blocks
+            ) as mock,
+            patch("xarray_adios._pio_read._read_selected_blocks", new=mock),
+        ):
             _ = store.read_variable("PS")
-            full_block_ids = [call.args[1] for call in mock.call_args_list]
+            full_block_ids = [call.args[3] for call in mock.call_args_list]
 
-        with patch.object(
-            store, "_read_selected_blocks", wraps=store._read_selected_blocks
-        ) as mock:
+        with (
+            patch(
+                "xarray_adios._pio_decomp._read_selected_blocks", wraps=_read_selected_blocks
+            ) as mock,
+            patch("xarray_adios._pio_read._read_selected_blocks", new=mock),
+        ):
             _ = store.read_variable("PS", key=(0, slice(None)))
-            frame_block_ids = [call.args[1] for call in mock.call_args_list]
+            frame_block_ids = [call.args[3] for call in mock.call_args_list]
 
         total_full = sum(len(ids) for ids in full_block_ids)
         total_frame = sum(len(ids) for ids in frame_block_ids)

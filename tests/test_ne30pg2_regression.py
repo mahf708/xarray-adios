@@ -99,8 +99,7 @@ class TestNe30pg2AdiosVsNetcdf:
             dims_nc = dict(ds_nc.sizes)
             dims_bp = dict(ds_bp.sizes)
             assert dims_nc == dims_bp, (
-                f"Dimension mismatch:\n"
-                f"  netCDF: {dims_nc}\n  ADIOS:  {dims_bp}"
+                f"Dimension mismatch:\n  netCDF: {dims_nc}\n  ADIOS:  {dims_bp}"
             )
 
     def test_same_coordinates(self):
@@ -119,8 +118,7 @@ class TestNe30pg2AdiosVsNetcdf:
         with _open_mf_nc() as ds_nc, _open_mf_bp() as ds_bp:
             for vname in _common_data_vars(ds_nc, ds_bp):
                 assert ds_nc[vname].shape == ds_bp[vname].shape, (
-                    f"{vname} shape: "
-                    f"NC={ds_nc[vname].shape} vs BP={ds_bp[vname].shape}"
+                    f"{vname} shape: NC={ds_nc[vname].shape} vs BP={ds_bp[vname].shape}"
                 )
 
     def test_variable_dtypes_compatible(self):
@@ -129,9 +127,9 @@ class TestNe30pg2AdiosVsNetcdf:
             for vname in _common_data_vars(ds_nc, ds_bp):
                 dt_nc = ds_nc[vname].dtype
                 dt_bp = ds_bp[vname].dtype
-                assert np.issubdtype(dt_nc, np.number) == np.issubdtype(
-                    dt_bp, np.number
-                ), f"{vname} dtype kind: NC={dt_nc} vs BP={dt_bp}"
+                assert np.issubdtype(dt_nc, np.number) == np.issubdtype(dt_bp, np.number), (
+                    f"{vname} dtype kind: NC={dt_nc} vs BP={dt_bp}"
+                )
 
     def test_all_values_close(self):
         """Every data variable should have nearly identical values."""
@@ -174,8 +172,7 @@ class TestNe30pg2AdiosVsNetcdf:
                     )
                 else:
                     assert val_nc == val_bp, (
-                        f"Global attr '{aname}': "
-                        f"NC={val_nc!r} vs BP={val_bp!r}"
+                        f"Global attr '{aname}': NC={val_nc!r} vs BP={val_bp!r}"
                     )
 
     def test_variable_attrs_present(self):
@@ -186,12 +183,9 @@ class TestNe30pg2AdiosVsNetcdf:
                 attrs_bp = ds_bp[vname].attrs
                 for key in ("units", "long_name"):
                     if key in attrs_nc:
-                        assert key in attrs_bp, (
-                            f"{vname} missing '{key}' in ADIOS"
-                        )
+                        assert key in attrs_bp, f"{vname} missing '{key}' in ADIOS"
                         assert attrs_nc[key] == attrs_bp[key], (
-                            f"{vname}.{key}: "
-                            f"NC={attrs_nc[key]!r} vs BP={attrs_bp[key]!r}"
+                            f"{vname}.{key}: NC={attrs_nc[key]!r} vs BP={attrs_bp[key]!r}"
                         )
 
 

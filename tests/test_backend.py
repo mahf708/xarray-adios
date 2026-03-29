@@ -6,8 +6,9 @@ import xarray as xr
 
 pytest.importorskip("adios2")
 
+from xarray_adios._common import is_pio_file
 from xarray_adios.backend import AdiosBackendEntrypoint
-from xarray_adios.pio_store import PioStore, is_pio_file
+from xarray_adios.pio_store import PioStore
 
 from .conftest import write_pio_bp, write_pio_bp_decomp, write_simple_bp
 
@@ -124,7 +125,13 @@ class TestOpenDataset:
                 "PS": ps_data,
             },
             dimensions={"time": ntime, "lat": nlat, "lon": nlon},
-            var_attrs={"PS": {"units": "Pa", "long_name": "Surface Pressure"}},
+            var_attrs={
+                "PS": {
+                    "units": "Pa",
+                    "long_name": "Surface Pressure",
+                    "def/dims": '{ "time", "lat", "lon" }',
+                },
+            },
             global_attrs={"title": "Test E3SM output"},
         )
 
@@ -197,8 +204,8 @@ class TestOpenDataset:
 class TestDecompStore:
     """Tests for decomposition map reading and variable-to-decomp association."""
 
-    def test_has_decomp_maps(self, tmp_bp_dir):
-        """Detect presence of decomposition maps."""
+    def test_decomp_maps_present(self, tmp_bp_dir):
+        """Decomposition maps are readable when present."""
         path = str(tmp_bp_dir / "decomp_detect.bp")
         ncol = 8
         decomp = np.array([3, 1, 4, 2, 8, 5, 7, 6], dtype=np.int64)
@@ -213,21 +220,9 @@ class TestDecompStore:
         )
 
         store = PioStore(path)
-        assert store.has_decomp_maps() is True
-        assert "512" in store.get_decomp_ids()
-        store.close()
-
-    def test_no_decomp_maps(self, tmp_bp_dir):
-        """File without decomp maps returns False."""
-        path = str(tmp_bp_dir / "no_decomp.bp")
-        write_pio_bp(
-            path,
-            variables={"T": np.ones(10, dtype=np.float32)},
-            dimensions={"ncol": 10},
-        )
-        store = PioStore(path)
-        assert store.has_decomp_maps() is False
-        assert store.get_decomp_ids() == []
+        variables = store.get_variables()
+        assert "T" in variables
+        assert variables["T"].decomp_id == "512"
         store.close()
 
     def test_var_decomp_mapping_attribute(self, tmp_bp_dir):
@@ -251,14 +246,14 @@ class TestDecompStore:
         assert var_infos["T"].decomp_id == "100"
         store.close()
 
-    def test_var_decomp_mapping_heuristic(self, tmp_bp_dir):
-        """Discover variable→decomp association via block-count heuristic."""
-        path = str(tmp_bp_dir / "decomp_heuristic.bp")
+    def test_var_without_decomp_metadata(self, tmp_bp_dir):
+        """Variable without track/attribute metadata has no decomp_id."""
+        path = str(tmp_bp_dir / "decomp_no_meta.bp")
         ncol = 6
         decomp = np.array([2, 4, 6, 1, 3, 5], dtype=np.int64)
         data = np.arange(ncol, dtype=np.float64)
 
-        # Don't pass var_decomps — reader should use heuristic
+        # Don't pass var_decomps — reader should not guess
         write_pio_bp_decomp(
             path,
             variables={"T": data},
@@ -270,7 +265,7 @@ class TestDecompStore:
         store = PioStore(path)
         var_infos = store.get_variables()
         assert "T" in var_infos
-        assert var_infos["T"].decomp_id == "100"
+        assert var_infos["T"].decomp_id is None
         store.close()
 
 
@@ -582,7 +577,9 @@ class TestGlobalAttrs:
         io.define_variable(
             "/__pio__/dim/ncol",
             np.array([4], dtype=np.uint64),
-            [1], [0], [1],
+            [1],
+            [0],
+            [1],
         )
         io.define_attribute("/__pio__/global/Conventions", "CF-1.7")
         io.define_attribute("/__pio__/global/source", "test")
