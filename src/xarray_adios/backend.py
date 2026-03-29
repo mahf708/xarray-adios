@@ -161,40 +161,47 @@ def _decode_cf(
     decode_times: bool = True,
 ) -> xr.Dataset:
     """Apply CF conventions decoding to variables."""
-    new_vars = {}
+    import numpy as np
 
-    for name, var in ds.variables.items():
-        attrs = dict(var.attrs)
-        encoding = {}
-
-        if mask_and_scale:
-            # Handle _FillValue
+    if mask_and_scale:
+        new_vars = {}
+        for name, var in ds.variables.items():
+            attrs = dict(var.attrs)
             fill_value = attrs.pop("_FillValue", None)
-            if fill_value is not None:
-                encoding["_FillValue"] = fill_value
-
-            # Handle scale_factor and add_offset
+            missing = attrs.pop("missing_value", None)
             scale = attrs.pop("scale_factor", None)
             offset = attrs.pop("add_offset", None)
-            if scale is not None:
+
+            encoding = {}
+            data = var.data
+
+            if fill_value is not None or missing is not None:
+                fv = fill_value if fill_value is not None else missing
+                encoding["_FillValue"] = fv
+                if np.issubdtype(var.dtype, np.floating):
+                    vals = np.array(data)
+                    vals = np.where(vals == fv, np.nan, vals)
+                    data = vals
+
+            if scale is not None or offset is not None:
                 encoding["scale_factor"] = scale
-            if offset is not None:
                 encoding["add_offset"] = offset
+                vals = np.array(data, dtype=np.float64)
+                if scale is not None:
+                    vals = vals * scale
+                if offset is not None:
+                    vals = vals + offset
+                data = vals
 
-        new_var = xr.Variable(
-            dims=var.dims,
-            data=var.data,
-            attrs=attrs,
-            encoding=encoding,
-        )
-        new_vars[name] = new_var
+            new_vars[name] = xr.Variable(
+                dims=var.dims, data=data, attrs=attrs, encoding=encoding
+            )
 
-    ds = ds.assign(new_vars)
+        ds = ds.assign(new_vars)
 
     if decode_times:
-        # Let xarray's built-in CF time decoding handle this
         try:
-            ds = xr.decode_cf(ds, decode_times=True, mask_and_scale=mask_and_scale)
+            ds = xr.decode_cf(ds, decode_times=True, mask_and_scale=False)
         except Exception as e:
             logger.debug("CF time decoding failed: %s", e)
 

@@ -491,3 +491,153 @@ class TestDecompOpenDataset:
             assert ds["T"].dims == ("time", "ncol")
             assert ds["T"].shape == (ntime, ncol)
             np.testing.assert_array_equal(ds["T"].values, expected)
+
+
+class TestSingleFrameDecomp:
+    """Tests for single-frame decomp variables preserving the time dimension."""
+
+    def test_single_frame_decomp_has_time_dim(self, tmp_bp_dir):
+        """A decomp variable with 1 frame should still have a time dimension
+        when def/dims includes 'time'."""
+        ncol = 6
+        decomp = np.array([2, 4, 6, 1, 3, 5], dtype=np.int64)
+        data = np.arange(ncol, dtype=np.float32)
+
+        path = str(tmp_bp_dir / "single_frame_decomp.bp")
+        write_pio_bp_decomp(
+            path,
+            variables={"PS": data},
+            dimensions={"time": 0, "ncol": ncol},  # time=0 → unlimited
+            decomp_maps={"100": decomp},
+            var_decomps={"PS": "100"},
+            var_attrs={
+                "PS": {
+                    "def/dims": '{ "time", "ncol" }',
+                    "def/ndims": 2,
+                    "def/decomp": "100",
+                    "def/ncop": "darray",
+                },
+            },
+        )
+
+        store = PioStore(path)
+        variables = store.get_variables()
+        ps_info = variables["PS"]
+        assert "time" in ps_info.dims
+        assert ps_info.dims == ("time", "ncol")
+        assert ps_info.shape == (1, ncol)
+
+        result = store.read_variable("PS")
+        assert result.shape == (1, ncol)
+        store.close()
+
+    def test_single_frame_3d_decomp(self, tmp_bp_dir):
+        """A 3D decomp variable (time, lev, ncol) with 1 frame should
+        have all three dimensions."""
+        ncol = 4
+        nlev = 3
+        decomp = np.arange(1, ncol * nlev + 1, dtype=np.int64)
+        data = np.arange(ncol * nlev, dtype=np.float32)
+
+        path = str(tmp_bp_dir / "single_frame_3d.bp")
+        write_pio_bp_decomp(
+            path,
+            variables={"U": data},
+            dimensions={"time": 0, "lev": nlev, "ncol": ncol},
+            decomp_maps={"200": decomp},
+            var_decomps={"U": "200"},
+            var_attrs={
+                "U": {
+                    "def/dims": '{ "time", "lev", "ncol" }',
+                    "def/ndims": 3,
+                    "def/decomp": "200",
+                    "def/ncop": "darray",
+                },
+            },
+        )
+
+        store = PioStore(path)
+        variables = store.get_variables()
+        u_info = variables["U"]
+        assert u_info.dims == ("time", "lev", "ncol")
+        assert u_info.shape == (1, nlev, ncol)
+
+        result = store.read_variable("U")
+        assert result.shape == (1, nlev, ncol)
+        store.close()
+
+
+class TestGlobalAttrs:
+    """Tests for global attribute reading."""
+
+    def test_pio_global_prefix(self, tmp_bp_dir):
+        """Global attributes under /__pio__/global/ should be exposed."""
+        import adios2
+
+        path = str(tmp_bp_dir / "global_attrs.bp")
+        adios_obj = adios2.Adios()
+        io = adios_obj.declare_io("writer")
+
+        # Write a minimal PIO file with global attrs
+        io.define_variable(
+            "/__pio__/dim/ncol",
+            np.array([4], dtype=np.uint64),
+            [1], [0], [1],
+        )
+        io.define_attribute("/__pio__/global/Conventions", "CF-1.7")
+        io.define_attribute("/__pio__/global/source", "test")
+        io.define_attribute("/__pio__/global/ne", 30)
+
+        engine = io.open(path, adios2.Mode.Write)
+        var = io.inquire_variable("/__pio__/dim/ncol")
+        engine.put(var, np.array([4], dtype=np.uint64))
+        engine.close()
+
+        store = PioStore(path)
+        attrs = store.get_global_attrs()
+        assert attrs["Conventions"] == "CF-1.7"
+        assert attrs["source"] == "test"
+        assert attrs["ne"] == 30
+        store.close()
+
+
+class TestFillValueMasking:
+    """Tests for _FillValue CF masking."""
+
+    def test_fillvalue_masked_to_nan(self, tmp_bp_dir):
+        """Variables with _FillValue should have fill values replaced by NaN."""
+        path = str(tmp_bp_dir / "fillval.bp")
+        fill = np.float32(1e20)
+        data = np.array([1.0, fill, 3.0, fill], dtype=np.float32)
+
+        write_pio_bp(
+            path,
+            variables={"T": data},
+            dimensions={"ncol": 4},
+            var_attrs={"T": {"_FillValue": fill, "units": "K"}},
+        )
+
+        with xr.open_dataset(path, engine="adios") as ds:
+            vals = ds["T"].values
+            assert np.isnan(vals[1]), "Fill value not masked to NaN"
+            assert np.isnan(vals[3]), "Fill value not masked to NaN"
+            assert vals[0] == pytest.approx(1.0)
+            assert vals[2] == pytest.approx(3.0)
+
+    def test_fillvalue_preserved_raw(self, tmp_bp_dir):
+        """With mask_and_scale=False, fill values should be preserved."""
+        path = str(tmp_bp_dir / "fillval_raw.bp")
+        fill = np.float32(1e20)
+        data = np.array([1.0, fill, 3.0], dtype=np.float32)
+
+        write_pio_bp(
+            path,
+            variables={"T": data},
+            dimensions={"ncol": 3},
+            var_attrs={"T": {"_FillValue": fill}},
+        )
+
+        with xr.open_dataset(path, engine="adios", mask_and_scale=False) as ds:
+            vals = ds["T"].values
+            assert not np.any(np.isnan(vals)), "Fill values should not be masked"
+            assert vals[1] == fill

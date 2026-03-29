@@ -48,6 +48,21 @@ _ADIOS_TYPE_MAP = {
 }
 
 
+_NC_TYPE_MAP: dict[int, np.dtype] = {
+    1: np.dtype(np.int8),
+    2: np.dtype("S1"),
+    3: np.dtype(np.int16),
+    4: np.dtype(np.int32),
+    5: np.dtype(np.float32),
+    6: np.dtype(np.float64),
+    7: np.dtype(np.uint8),
+    8: np.dtype(np.uint16),
+    9: np.dtype(np.uint32),
+    10: np.dtype(np.int64),
+    11: np.dtype(np.uint64),
+}
+
+
 class VariableInfo:
     """Metadata about a PIO variable."""
 
@@ -61,6 +76,7 @@ class VariableInfo:
         "nblocks",
         "block_counts",
         "decomp_id",
+        "raw_dtype",
     )
 
     def __init__(
@@ -74,6 +90,7 @@ class VariableInfo:
         nblocks: int,
         block_counts: list[int],
         decomp_id: str | None = None,
+        raw_dtype: np.dtype | None = None,
     ):
         self.name = name
         self.pio_name = pio_name
@@ -84,6 +101,7 @@ class VariableInfo:
         self.nblocks = nblocks
         self.block_counts = block_counts
         self.decomp_id = decomp_id
+        self.raw_dtype = raw_dtype
 
 
 class PioStore:
@@ -209,6 +227,148 @@ class PioStore:
 
         return tuple(dim_names), tuple(shape)
 
+    def _dims_from_def_decomp(
+        self,
+        def_dims_val: Any,
+        total_elements: int,
+        dims: dict[str, int],
+        decomp_id: str,
+    ) -> tuple[tuple[str, ...], tuple[int, ...]] | None:
+        """Compute dims/shape for a decomp variable using ``def/dims`` metadata.
+
+        For decomposed variables the raw *total_elements* includes MPI padding
+        and does not divide evenly by the global dimension sizes.  Instead we
+        derive the spatial extent from the decomposition map and compute the
+        number of frames from the ``total_elements / decomp_total`` ratio.
+        """
+        dim_names = _parse_string_array(def_dims_val)
+        if not dim_names:
+            return None
+
+        decomp_blocks = self._get_decomp_rank_blocks(decomp_id)
+        all_indices = np.concatenate(decomp_blocks)
+        spatial_size = int(np.max(all_indices))  # 1-based → max = global size
+        decomp_total = sum(len(b) for b in decomp_blocks)
+
+        # Compute nframes from data/decomp ratio
+        if decomp_total > 0 and total_elements > decomp_total and total_elements % decomp_total == 0:
+            nframes = total_elements // decomp_total
+        else:
+            nframes = 1
+
+        # Build shape from dim names: time dims get nframes,
+        # known dims get their size from the dims dict, and at most one
+        # unknown spatial dim is inferred from the decomp spatial_size.
+        shape: list[int] = []
+        unknown_idx: int | None = None
+        known_spatial_product = 1
+
+        for i, d in enumerate(dim_names):
+            size = dims.get(d, -1)
+            if d == "time" or size == 0:
+                # Time / unlimited dimension
+                shape.append(nframes)
+            elif size > 0:
+                shape.append(size)
+                known_spatial_product *= size
+            else:
+                # Unknown dimension — infer from spatial_size
+                if unknown_idx is not None:
+                    return None  # Multiple unknowns — can't resolve
+                unknown_idx = i
+                shape.append(0)  # placeholder
+
+        if unknown_idx is not None:
+            if known_spatial_product > 0 and spatial_size % known_spatial_product == 0:
+                shape[unknown_idx] = spatial_size // known_spatial_product
+            else:
+                return None
+
+        return tuple(dim_names), tuple(shape)
+
+    def _catalog_putvar(
+        self,
+        short_name: str,
+        pio_name: str,
+        var: Any,
+        vdef: dict[str, Any],
+        dims: dict[str, int],
+    ) -> VariableInfo | None:
+        """Catalog a ``put_var`` variable stored as raw uint8 bytes.
+
+        SCORPIO writes non-distributed variables (coordinates, time
+        metadata, etc.) as raw byte streams.  The actual dtype is given
+        by ``def/nctype`` and a 16-byte header precedes the payload.
+        """
+        nctype = vdef.get("nctype")
+        if nctype is None:
+            return None
+        real_dtype = _NC_TYPE_MAP.get(int(nctype))
+        if real_dtype is None or real_dtype.itemsize == 0:
+            return None
+
+        # Read total raw byte count via var.count()
+        var.set_step_selection((0, 1))
+        var.set_block_selection(0)
+        raw_count = int(var.count()[0])
+
+        # put_var header: ndims * 16 bytes (ndims * 2 int64 values)
+        ndims_val = vdef.get("ndims")
+        ndims = int(ndims_val) if ndims_val is not None else 1
+        header_bytes = max(ndims, 1) * 16
+        payload_bytes = raw_count - header_bytes
+        if payload_bytes <= 0:
+            return None
+        total_elements = payload_bytes // real_dtype.itemsize
+
+        # Determine dims/shape from def/dims
+        def_dims = vdef.get("dims")
+        var_dims: tuple[str, ...] | None = None
+        var_shape: tuple[int, ...] | None = None
+        if def_dims is not None:
+            result = self._dims_from_def(def_dims, total_elements, dims)
+            if result is not None:
+                var_dims, var_shape = result
+
+        if var_dims is None or var_shape is None:
+            # Fallback: 1D with element count
+            var_dims = (f"dim_{short_name}_{total_elements}",)
+            var_shape = (total_elements,)
+
+        attrs = self._read_var_attrs(pio_name, short_name)
+
+        return VariableInfo(
+            name=short_name,
+            pio_name=pio_name,
+            dims=var_dims,
+            shape=var_shape,
+            dtype=np.dtype(real_dtype),
+            attrs=attrs,
+            nblocks=1,
+            block_counts=[raw_count],
+            decomp_id=None,
+            raw_dtype=np.dtype(np.uint8),
+        )
+
+    def _fix_putvar_time(
+        self, variables: dict[str, VariableInfo], ntime: int
+    ) -> None:
+        """Align the time dimension of put_var variables to *ntime*.
+
+        put_var byte streams may contain more or fewer frames than the
+        file's science variables.  We adjust the shape so all variables
+        agree on the time dimension size.
+        """
+        for info in variables.values():
+            if info.raw_dtype is None or "time" not in info.dims:
+                continue
+            tidx = info.dims.index("time")
+            if info.shape[tidx] == ntime:
+                continue
+            new_shape = list(info.shape)
+            new_shape[tidx] = ntime
+            info.shape = tuple(new_shape)
+
     # ------------------------------------------------------------------
     # Variable catalog
     # ------------------------------------------------------------------
@@ -237,6 +397,26 @@ class PioStore:
                 # String variables — read eagerly, store as attrs later
                 continue
 
+            vdef = var_defs.get(short_name, {})
+            vinfo_dict = self._all_vars[vname]
+
+            # Handle put_var variables stored as raw uint8 bytes.
+            # These use a different serialisation that causes blocks_info
+            # to fail, so we detect and process them before that call.
+            ncop = vdef.get("ncop")
+            is_putvar = (
+                dtype == np.uint8
+                and ncop is not None
+                and str(ncop).strip('"') == "put_var"
+            )
+            if is_putvar:
+                result = self._catalog_putvar(
+                    short_name, vname, var, vdef, dims
+                )
+                if result is not None:
+                    variables[short_name] = result
+                continue
+
             # Read block info to determine shape
             try:
                 block_info = self._engine.blocks_info(vname, 0)
@@ -250,8 +430,6 @@ class PioStore:
             total_elements = sum(block_counts)
 
             # Detect scalars: SingleValue or ndims=0 with 0 data elements
-            vdef = var_defs.get(short_name, {})
-            vinfo_dict = self._all_vars[vname]
             is_scalar = vinfo_dict.get("SingleValue", "") == "true"
             if not is_scalar:
                 ndims_val = vdef.get("ndims")
@@ -285,7 +463,12 @@ class PioStore:
             var_shape: tuple[int, ...] | None = None
             def_dims = vdef.get("dims")
             if def_dims is not None:
-                result = self._dims_from_def(def_dims, total_elements, dims)
+                if decomp_id is not None:
+                    result = self._dims_from_def_decomp(
+                        def_dims, total_elements, dims, decomp_id
+                    )
+                else:
+                    result = self._dims_from_def(def_dims, total_elements, dims)
                 if result is not None:
                     var_dims, var_shape = result
 
@@ -313,6 +496,17 @@ class PioStore:
                 block_counts=block_counts,
                 decomp_id=decomp_id,
             )
+
+        # Determine authoritative time size from science variables
+        # and clamp put_var variables that may have extra buffered frames.
+        ntime = None
+        for info in variables.values():
+            if info.raw_dtype is None and "time" in info.dims:
+                tidx = info.dims.index("time")
+                ntime = info.shape[tidx]
+                break
+        if ntime is not None:
+            self._fix_putvar_time(variables, ntime)
 
         self._variable_info = variables
         return variables
@@ -541,8 +735,21 @@ class PioStore:
 
     def _read_blocks(self, info: VariableInfo) -> np.ndarray:
         """Read all blocks for a variable and reconstruct via concat+reshape."""
-        blocks = self._read_raw_blocks(info.pio_name, info.nblocks, info.block_counts, info.dtype)
+        read_dtype = info.raw_dtype if info.raw_dtype is not None else info.dtype
+        blocks = self._read_raw_blocks(
+            info.pio_name, info.nblocks, info.block_counts, read_dtype
+        )
         flat = np.concatenate(blocks)
+        if info.raw_dtype is not None:
+            # put_var header: ndims * 16 bytes (ndims * 2 int64 values)
+            ndims = max(len(info.shape), 1)
+            header_bytes = ndims * 16
+            flat = flat[header_bytes:].view(info.dtype)
+            # Tile if the data has fewer elements than the target shape
+            target_size = int(np.prod(info.shape)) if info.shape else 1
+            if flat.size < target_size and flat.size > 0:
+                reps = target_size // flat.size
+                flat = np.tile(flat, reps)[:target_size]
 
         # Reshape to the inferred shape
         try:
@@ -1032,22 +1239,30 @@ class PioStore:
     def get_global_attrs(self) -> dict[str, Any]:
         """Read global (file-level) attributes."""
         attrs: dict[str, Any] = {}
-        var_names = set(self._all_vars.keys())
-        # Also collect short variable names so that attributes stored as
-        # "{short_name}/{attr_name}" are correctly recognised as variable-scoped.
-        short_var_names = {
-            v[len(_PIO_VAR_PREFIX) :] for v in self._all_vars if v.startswith(_PIO_VAR_PREFIX)
-        }
+        _GLOBAL_PREFIX = "/__pio__/global/"
 
         for aname, ainfo in self._all_attrs.items():
-            # Skip attributes that belong to variables in the PIO namespace
-            if aname.startswith("/__pio__/"):
-                continue
-            # Skip if this looks like a variable attribute (contains / after first segment)
-            parts = aname.split("/")
-            if len(parts) > 1 and (parts[0] in var_names or parts[0] in short_var_names):
-                continue
-            attrs[aname] = _parse_attr_value(ainfo)
+            if aname.startswith(_GLOBAL_PREFIX):
+                short = aname[len(_GLOBAL_PREFIX) :]
+                attrs[short] = _parse_attr_value(ainfo)
+
+        # Also pick up any non-PIO-namespaced attributes (generic BP files)
+        if not attrs:
+            var_names = set(self._all_vars.keys())
+            short_var_names = {
+                v[len(_PIO_VAR_PREFIX) :]
+                for v in self._all_vars
+                if v.startswith(_PIO_VAR_PREFIX)
+            }
+            for aname, ainfo in self._all_attrs.items():
+                if aname.startswith("/__pio__/"):
+                    continue
+                parts = aname.split("/")
+                if len(parts) > 1 and (
+                    parts[0] in var_names or parts[0] in short_var_names
+                ):
+                    continue
+                attrs[aname] = _parse_attr_value(ainfo)
 
         return attrs
 
